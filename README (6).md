@@ -8,18 +8,6 @@
 
 ---
 
-## Daftar Isi
-
-1. [Deskripsi Singkat Program](#1-deskripsi-singkat-program)
-2. [Penjelasan Struktur Package](#2-penjelasan-struktur-package)
-3. [Penjelasan Alur Program](#3-penjelasan-alur-program)
-4. [Penerapan Encapsulation dan Inheritance](#4-penerapan-encapsulation-dan-inheritance)
-5. [Penerapan Polymorphism dan Abstraction](#5-penerapan-polymorphism-dan-abstraction)
-6. [Penerapan Nilai Tambah (Interface)](#6-penerapan-nilai-tambah-interface)
-7. [Dokumentasi Tampilan Program](#7-dokumentasi-tampilan-program)
-
----
-
 ## 1. Deskripsi Singkat Program
 
 Sistem Manajemen Donasi Darah adalah program CRUD (Create, Read, Update, Delete) berbasis Java yang berjalan lewat command line. Program mengelola dua jenis data, yaitu **data pendonor** dan **data riwayat donasi darah**.
@@ -199,38 +187,128 @@ Pemanggilan donor.catatDonasi() di DonasiDarahManager.tambahDonasi() juga polymo
 
 ---
 
-## 6. Penerapan Nilai Tambah (Interface)
+## 6. Penerapan JDBC
 
-Nilai tambah yang saya terapkan adalah interface DapatDitampilkan di package model.
+JDBC (Java Database Connectivity) adalah API standar Java untuk menghubungkan program dengan database. Pada program ini, JDBC dipakai bersama pola DAO.
 
-```java
-public interface DapatDitampilkan {
-    String formatData();
-    default String formatRingkas() {
-        return formatData();
+### 6.1 Driver JDBC
+
+Driver ditambahkan sebagai dependency di pom.xml:
+
+xml
+<dependency>
+    <groupId>com.mysql</groupId>
+    <artifactId>mysql-connector-j</artifactId>
+    <version>8.0.33</version>
+</dependency>
+### 6.2 Koneksi database (config.DatabaseConnection)
+
+Class ini menyimpan alamat server, nama database, user, dan password, lalu membuka koneksi lewat DriverManager:
+
+java
+private static final String URL = "jdbc:mysql://localhost:3306/donasi_darah"
+        + "?useSSL=false&allowPublicKeyRetrieval=true";
+
+public static Connection getConnection() throws SQLException {
+    return DriverManager.getConnection(URL, USER, PASSWORD);
+}
+
+Seluruh DAO mengambil koneksi dari satu tempat ini, sehingga jika pengaturan database berubah, cukup satu file yang diubah.
+
+### 6.3 Struktur database (sql/donasi_darah.sql)
+Tabel	Kolom	Keterangan
+donor	id (PRIMARY KEY, AUTO_INCREMENT), nama, golongan_darah, umur, no_telepon, kategori, sumber_informasi, jumlah_donasi	Menyimpan DonorBaru dan DonorTetap dalam satu tabel. Kolom kategori berisi BARU atau TETAP.
+riwayat_donasi	id_donasi (PRIMARY KEY, AUTO_INCREMENT), id_donor (FOREIGN KEY), tanggal_donasi, jumlah_kantong	Setiap baris adalah satu kali donasi milik satu donor.
+
+Aturan yang dijaga oleh database:
+
+CHECK pada golongan_darah (A, B, AB, O), umur (17 sampai 65), kategori (BARU atau TETAP), dan jumlah_kantong (lebih dari 0).
+FOREIGN KEY id_donor mengarah ke donor.id dengan ON DELETE CASCADE. Jika donor dihapus, riwayat donasinya ikut terhapus otomatis.
+### 6.4 Data awal lewat file SQL
+
+Data awal diisi di file donasi_darah.sql, bukan di kode Java:
+
+sql
+INSERT INTO donor (nama, golongan_darah, umur, no_telepon, kategori, sumber_informasi, jumlah_donasi) VALUES
+    ('Siti Aminah',  'A', 22, '081234567890', 'BARU',  'Media sosial', NULL),
+    ('Budi Santoso', 'O', 30, '081298765432', 'TETAP', NULL,           3);
+
+INSERT INTO riwayat_donasi (id_donor, tanggal_donasi, jumlah_kantong) VALUES
+    (2, '2026-01-15', 1);
+
+File ini juga berisi DROP TABLE di bagian awal, sehingga menjalankannya ulang mengembalikan database ke kondisi awal.
+
+### 6.5 PreparedStatement
+
+Semua query memakai PreparedStatement. Nilai dari pengguna tidak digabung langsung ke teks SQL, melainkan dikirim lewat tanda tanya (?) sebagai parameter. Cara ini mencegah SQL injection dan membuat query lebih rapi.
+
+Contoh INSERT di DonorDAOImpl:
+
+java
+private static final String SQL_INSERT =
+    "INSERT INTO donor (nama, golongan_darah, umur, no_telepon, kategori, sumber_informasi, jumlah_donasi) "
+    + "VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+try (Connection conn = DatabaseConnection.getConnection();
+     PreparedStatement ps = conn.prepareStatement(SQL_INSERT, Statement.RETURN_GENERATED_KEYS)) {
+    isiParameter(ps, donor);
+    ps.executeUpdate();
+    try (ResultSet kunci = ps.getGeneratedKeys()) {
+        if (kunci.next()) {
+            return kunci.getInt(1);
+        }
     }
 }
-```
 
-### Letak penerapan
+Penjelasan bagian penting:
 
-| Letak | Peran |
-|---|---|
-| Donor implements DapatDitampilkan | Donor dapat ditampilkan oleh View. |
-| RiwayatDonasi implements DapatDitampilkan | Riwayat donasi juga dapat ditampilkan oleh View. |
-| ConsoleView.tampilkanData(DapatDitampilkan data) | Menampilkan satu objek apa pun yang mengimplementasikan interface. |
-| ConsoleView.tampilkanData(List<? extends DapatDitampilkan>, String) | Menampilkan banyak objek sekaligus. |
+Bagian	Fungsi
+Tanda tanya (?)	Penampung parameter yang diisi lewat ps.setString(), ps.setInt(), dan sejenisnya.
+try-with-resources	Connection, PreparedStatement, dan ResultSet ditutup otomatis, termasuk saat terjadi error.
+RETURN_GENERATED_KEYS	Mengambil ID yang dibuat database (AUTO_INCREMENT) setelah INSERT.
+executeUpdate()	Dipakai untuk INSERT, UPDATE, dan DELETE.
+executeQuery()	Dipakai untuk SELECT dan menghasilkan ResultSet.
+ps.setNull()	Mengisi kolom yang tidak dipakai kategori tertentu dengan NULL.
+### 6.6 Pola DAO
 
-### Manfaat
+DAO memisahkan kode akses database dari logika program. Setiap tabel punya satu interface dan satu implementasi.
 
-- Donor dan RiwayatDonasi tidak berhubungan lewat pewarisan, tetapi bisa ditampilkan lewat satu method yang sama karena berbagi kontrak yang sama.
-- **Model tidak mencetak apa pun. Model hanya mengembalikan teks lewat formatData(), dan View yang mencetaknya, sehingga pemisahan MVC tetap terjaga.
-- View tidak bergantung pada class tertentu. Class baru cukup implements DapatDitampilkan agar langsung bisa ditampilkan tanpa mengubah kode View.
-- Method formatRingkas() bersifat default, sehingga class yang tidak membutuhkannya tidak wajib mengimplementasikannya.
+Operasi	Method DonorDAO	Method RiwayatDonasiDAO	Perintah SQL
+Create	insert	insert	INSERT
+Read semua	findAll	findAll	SELECT
+Read satu	findById	findById	SELECT ... WHERE id = ?
+Cari nama	findByNama	-	SELECT ... WHERE LOWER(nama) LIKE ?
+Update	update	update	UPDATE ... WHERE id = ?
+Delete	delete	delete	DELETE ... WHERE id = ?
+Ringkasan	count	count, countByDonor, sumKantong	COUNT dan SUM
+### 6.7 Pemetaan baris database ke objek
 
----
+DonorDAOImpl mengubah satu baris tabel menjadi objek Java sesuai kolom kategori:
 
-## 7. Dokumentasi Tampilan Program
+java
+if (KATEGORI_TETAP.equals(kategori)) {
+    return new DonorTetap(id, nama, golongan, umur, telepon, rs.getInt("jumlah_donasi"));
+}
+if (KATEGORI_BARU.equals(kategori)) {
+    return new DonorBaru(id, nama, golongan, umur, telepon, rs.getString("sumber_informasi"));
+}
+
+Sebaliknya, saat menyimpan, method isiParameter() memeriksa jenis objek (DonorBaru atau DonorTetap) untuk mengisi kolom yang sesuai. Karena objek dibentuk lewat constructor, validasi di Model tetap berlaku untuk data yang dibaca dari database.
+
+### 6.8 Penanganan error JDBC
+Method DAO melempar SQLException ke Service.
+Service menangkapnya dan membungkusnya menjadi DatabaseException (unchecked) dengan pesan yang jelas.
+Controller menangkap DatabaseException dan View menampilkan pesan [GAGAL] ..., sehingga program tidak crash.
+Saat program dimulai, koneksi diuji lebih dulu. Jika database belum menyala atau pengaturan salah, program menampilkan petunjuk perbaikan lalu berhenti dengan rapi.
+### 6.9 Langkah menyambungkan program dengan database
+Jalankan MySQL (misalnya lewat XAMPP, tombol Start pada MySQL).
+Impor file sql/donasi_darah.sql lewat phpMyAdmin (tab Import) atau lewat perintah mysql.
+Tambahkan dependency mysql-connector-j di pom.xml, lalu Reload POM.
+Sesuaikan user dan password di DatabaseConnection.java jika berbeda dari bawaan (user root, password kosong).
+Jalankan Clean and Build, lalu Run. Output harus menampilkan Koneksi database berhasil.
+6.10 Catatan
+Hitungan jumlahDonasi pada donor tetap bertambah saat donasi dicatat, tetapi tidak berkurang saat donasi dihapus.
+Setiap operasi DAO membuka dan menutup koneksinya sendiri. Proses catat donasi (insert donasi lalu update hitungan donor) belum dibungkus dalam satu transaksi.
 
 ### Tampilan Awal
 
@@ -327,3 +405,26 @@ public interface DapatDitampilkan {
 **Gambar 20.** Program keluar setelah memilih menu 0, ditandai pesan "Terima kasih telah menggunakan Sistem Donasi Darah." Baris BUILD SUCCESS adalah output Maven yang menandakan program berjalan sampai selesai.
 
 ---
+
+### 7.4 Data Awal di Database
+<img width="940" height="388" alt="image" src="https://github.com/user-attachments/assets/d2960ad0-c91e-457d-bb0c-b27a4d56edb4" />
+
+**Gambar 21.** Isi tabel donor dan riwayat_donasi yang dilihat langsung di database lewat perintah SELECT. Data berasal dari file SQL: Siti Aminah (Donor Baru) dan Budi Santoso (Donor Tetap). Pada gambar ini, jumlah_donasi Budi bernilai 4 dan riwayat_donasi berisi 2 donasi untuk donor ID 2, karena satu donasi (2026-01-20, 2 kantong) sudah dicatat setelah data awal dimuat, sehingga hitungan donasi Budi naik dari 3 menjadi 4.
+
+### 7.5 Tambah Donor (Create)
+<img width="539" height="453" alt="image" src="https://github.com/user-attachments/assets/cc00b9b2-1187-492d-98df-c872c9e9819b" />
+
+**Gambar 22.** Menambah Donor Baru bernama Aidil lewat menu Kelola Data Donor. Kolom sumber informasi sengaja dikosongkan. Program menampilkan pesan berhasil dengan ID 5. ID ini dibuat oleh database (AUTO_INCREMENT), bukan oleh program, sehingga nomornya melanjutkan urutan sebelumnya.
+
+<img width="539" height="453" alt="image" src="https://github.com/user-attachments/assets/8ed760f4-9c65-48dc-a2bc-0e41254936db" />
+
+**Gambar 23.** Tabel donor setelah penambahan: data baru Aidil (ID 5) sudah tersimpan di database. Kolom sumber_informasi terisi Tidak disebutkan karena input dikosongkan, dan jumlah_donasi bernilai NULL karena kategorinya BARU.
+
+### 7.3 Catat Donasi (Create)
+<img width="413" height="306" alt="image" src="https://github.com/user-attachments/assets/717f709d-c621-4cc8-b5c6-1ccde7294244" />
+
+**Gambar 24.** Mencatat donasi baru untuk donor ID 5 pada tanggal 2026-01-20 sebanyak 2 kantong lewat menu Kelola Data Donasi. Program menampilkan pesan berhasil dengan ID donasi 3, lalu kembali ke submenu donasi.
+
+<img width="725" height="290" alt="image" src="https://github.com/user-attachments/assets/a6d056f9-62d1-4160-b18b-fa5686021e0c" />
+
+**Gambar 25.** Tabel riwayat_donasi setelah pencatatan: donasi ID 3 milik donor ID 5 sudah tersimpan di database, bersama dua donasi sebelumnya milik donor ID 2. Gambar ini membuktikan data dari program benar-benar masuk ke database lewat JDBC.
