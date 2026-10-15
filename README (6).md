@@ -4,7 +4,7 @@
 |---|---|
 | **Nama** | Muhammad Aidil Fadilah |
 | **NIM** | 2509116032 |
-| **Kelas** | Sistem Informasi A 2025 |
+| **Kelas** | Sistem Informasi A 2025 | 
 
 ---
 
